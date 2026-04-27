@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>FraudSentinel — Real-Time Monitor</title>
+<link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:ital,wght@0,300;0,500;0,700;1,300&display=swap" rel="stylesheet"/>
+<style>
+  :root {
+    --bg:        #080c14;
+    --surface:   #0d1320;
+    --border:    #1a2540;
+    --low:       #00c896;
+    --medium:    #f5a623;
+    --high:      #ff3b5c;
+    --accent:    #3d7fff;
+    --text:      #c8d6f0;
+    --muted:     #4a5a7a;
+    --mono:      'Space Mono', monospace;
+    --sans:      'DM Sans', sans-serif;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: var(--sans);
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow-x: hidden;
+  }
+
+  /* ── Scanline overlay ─────────────────────────────────────── */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background: repeating-linear-gradient(
+      0deg, transparent, transparent 2px,
+      rgba(0,0,0,.07) 2px, rgba(0,0,0,.07) 4px
+    );
+    pointer-events: none;
+    z-index: 9999;
+  }
+
+  /* ── Header ──────────────────────────────────────────────── */
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16px 28px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(13,19,32,.95);
+    backdrop-filter: blur(12px);
+    position: sticky; top: 0; z-index: 100;
+  }
+
+  .logo {
+    font-family: var(--mono);
+    font-size: 1.05rem;
+    color: var(--accent);
+    letter-spacing: .04em;
+    display: flex; align-items: center; gap: 10px;
+  }
+
+  .logo-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--low);
+    box-shadow: 0 0 8px var(--low);
+    animation: pulse 1.8s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%,100% { opacity: 1; transform: scale(1); }
+    50%      { opacity: .5; transform: scale(1.4); }
+  }
+
+  .header-right {
+    display: flex; align-items: center; gap: 20px;
+    font-family: var(--mono);
+    font-size: .72rem;
+    color: var(--muted);
+  }
+
+  #ws-status {
+    display: flex; align-items: center; gap: 6px;
+  }
+
+  #ws-dot {
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--muted);
+    transition: background .3s;
+  }
+
+  #ws-dot.connected { background: var(--low); box-shadow: 0 0 6px var(--low); }
+  #ws-dot.error     { background: var(--high); }
+
+  /* ── Layout ───────────────────────────────────────────────── */
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr 340px;
+    grid-template-rows: auto auto 1fr;
+    gap: 1px;
+    background: var(--border);
+    padding: 0;
+  }
+
+  .panel {
+    background: var(--surface);
+    padding: 22px 24px;
+  }
+
+  .panel-label {
+    font-family: var(--mono);
+    font-size: .65rem;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 12px;
+  }
+
+  /* ── KPI cards ───────────────────────────────────────────── */
+  .kpi-row {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 1px;
+    background: var(--border);
+  }
+
+  .kpi {
+    background: var(--surface);
+    padding: 18px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .kpi-value {
+    font-family: var(--mono);
+    font-size: 1.9rem;
+    font-weight: 700;
+    line-height: 1;
+    transition: color .3s;
+  }
+
+  .kpi-label {
+    font-size: .72rem;
+    color: var(--muted);
+    letter-spacing: .05em;
+  }
+
+  .kpi-delta {
+    font-family: var(--mono);
+    font-size: .68rem;
+    margin-top: 2px;
+  }
+
+  .val-low    { color: var(--low); }
+  .val-medium { color: var(--medium); }
+  .val-high   { color: var(--high); }
+  .val-accent { color: var(--accent); }
+  .val-white  { color: #fff; }
+
+  /* ── Chart areas ─────────────────────────────────────────── */
+  .chart-wrap {
+    position: relative;
+    width: 100%;
+    height: 180px;
+    margin-top: 8px;
+  }
+
+  canvas { display: block; width: 100% !important; }
+
+  /* ── Risk gauge ─────────────────────────────────────────── */
+  .gauge-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    padding-top: 6px;
+  }
+
+  .gauge-arc {
+    position: relative;
+    width: 160px; height: 80px;
+    overflow: hidden;
+  }
+
+  .gauge-arc svg { width: 100%; }
+
+  .gauge-label {
+    font-family: var(--mono);
+    font-size: 1.4rem;
+    font-weight: 700;
+    text-align: center;
+  }
+
+  /* ── Feed table ──────────────────────────────────────────── */
+  .feed-panel {
+    grid-column: 1 / 4;
+    grid-row: 3;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .feed-header {
+    display: grid;
+    grid-template-columns: 130px 90px 90px 90px 80px 1fr;
+    gap: 8px;
+    padding: 10px 24px;
+    font-family: var(--mono);
+    font-size: .62rem;
+    letter-spacing: .08em;
+    color: var(--muted);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    text-transform: uppercase;
+    position: sticky;
+  }
+
+  #feed-body {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 340px;
+  }
+
+  #feed-body::-webkit-scrollbar { width: 4px; }
+  #feed-body::-webkit-scrollbar-track { background: transparent; }
+  #feed-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+  .feed-row {
+    display: grid;
+    grid-template-columns: 130px 90px 90px 90px 80px 1fr;
+    gap: 8px;
+    padding: 9px 24px;
+    font-family: var(--mono);
+    font-size: .7rem;
+    border-bottom: 1px solid rgba(26,37,64,.5);
+    animation: rowSlide .25s ease;
+    align-items: center;
+  }
+
+  @keyframes rowSlide {
+    from { opacity: 0; transform: translateX(-10px); }
+    to   { opacity: 1; transform: translateX(0); }
+  }
+
+  .feed-row:hover { background: rgba(61,127,255,.06); }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: .62rem;
+    letter-spacing: .06em;
+    font-weight: 700;
+  }
+
+  .badge-LOW    { background: rgba(0,200,150,.15); color: var(--low); }
+  .badge-MEDIUM { background: rgba(245,166,35,.15); color: var(--medium); }
+  .badge-HIGH   { background: rgba(255,59,92,.18); color: var(--high); }
+
+  .prob-bar-wrap { position: relative; }
+  .prob-bar-bg {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-top: 3px;
+  }
+  .prob-bar-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width .3s;
+  }
+
+  /* ── Alerts panel ────────────────────────────────────────── */
+  .alerts-panel {
+    grid-column: 4;
+    grid-row: 2 / 4;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  #alerts-list {
+    flex: 1;
+    overflow-y: auto;
+    max-height: 560px;
+  }
+
+  #alerts-list::-webkit-scrollbar { width: 4px; }
+  #alerts-list::-webkit-scrollbar-thumb { background: var(--border); }
+
+  .alert-card {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    border-left: 3px solid var(--high);
+    animation: alertIn .3s ease;
+    cursor: default;
+    transition: background .2s;
+  }
+
+  .alert-card:hover { background: rgba(255,59,92,.06); }
+
+  @keyframes alertIn {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .alert-id {
+    font-family: var(--mono);
+    font-size: .65rem;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+
+  .alert-prob {
+    font-family: var(--mono);
+    font-size: 1.1rem;
+    font-weight: 700;
+    color: var(--high);
+  }
+
+  .alert-time {
+    font-size: .65rem;
+    color: var(--muted);
+    margin-top: 4px;
+  }
+
+  .alert-shap {
+    margin-top: 8px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .shap-tag {
+    font-family: var(--mono);
+    font-size: .58rem;
+    padding: 2px 6px;
+    background: rgba(255,59,92,.12);
+    color: var(--high);
+    border-radius: 2px;
+  }
+
+  /* ── SHAP bar mini ───────────────────────────────────────── */
+  .shap-panel { grid-column: 4; grid-row: 1; }
+
+  /* ── Responsive ─────────────────────────────────────────── */
+  @media (max-width: 1100px) {
+    main {
+      grid-template-columns: 1fr 1fr;
+      grid-template-rows: auto auto auto auto;
+    }
+    .kpi-row { grid-template-columns: repeat(3, 1fr); }
+    .feed-panel { grid-column: 1 / 3; }
+    .alerts-panel { grid-column: 1 / 3; grid-row: auto; }
+  }
+
+  /* ── Command line alert strip ──────────────────────────── */
+  #cli-strip {
+    background: #040709;
+    border-top: 1px solid var(--border);
+    padding: 6px 24px;
+    font-family: var(--mono);
+    font-size: .65rem;
+    color: var(--low);
+    white-space: nowrap;
+    overflow: hidden;
+    display: flex;
+    gap: 16px;
+  }
+
+  #cli-log {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+</style>
+</head>
+<body>
+
+<!-- ── Header ─────────────────────────────────────────────────── -->
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    FRAUDSENTINEL
+  </div>
+  <div class="header-right">
+    <div id="ws-status">
+      <div id="ws-dot"></div>
+      <span id="ws-label">DISCONNECTED</span>
+    </div>
+    <span id="clock">--:--:--</span>
+    <span id="txn-rate">0 tx/s</span>
+  </div>
+</header>
+
+<!-- ── Main grid ──────────────────────────────────────────────── -->
+<main>
+
+  <!-- KPI row -->
+  <div class="kpi-row">
+    <div class="kpi">
+      <span class="kpi-value val-white" id="kpi-total">0</span>
+      <span class="kpi-label">TOTAL SCORED</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-value val-high" id="kpi-fraud-rate">0.00%</span>
+      <span class="kpi-label">FRAUD RATE</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-value val-low" id="kpi-low">0</span>
+      <span class="kpi-label">LOW RISK</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-value val-medium" id="kpi-medium">0</span>
+      <span class="kpi-label">MEDIUM RISK</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-value val-high" id="kpi-high">0</span>
+      <span class="kpi-label">HIGH RISK</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-value val-accent" id="kpi-latency">—</span>
+      <span class="kpi-label">AVG LATENCY (ms)</span>
+    </div>
+  </div>
+
+  <!-- Prob trend chart -->
+  <div class="panel">
+    <div class="panel-label">Fraud Probability — Live Feed</div>
+    <div class="chart-wrap">
+      <canvas id="chart-prob"></canvas>
+    </div>
+  </div>
+
+  <!-- Risk distribution chart -->
+  <div class="panel">
+    <div class="panel-label">Risk Distribution</div>
+    <div class="chart-wrap">
+      <canvas id="chart-dist"></canvas>
+    </div>
+  </div>
+
+  <!-- Latency chart -->
+  <div class="panel">
+    <div class="panel-label">Scoring Latency (ms)</div>
+    <div class="chart-wrap">
+      <canvas id="chart-latency"></canvas>
+    </div>
+  </div>
+
+  <!-- Alerts panel (spans rows 2-3) -->
+  <div class="panel alerts-panel">
+    <div class="panel-label">🚨 HIGH RISK ALERTS</div>
+    <div id="alerts-list">
+      <div style="padding:16px;color:var(--muted);font-size:.75rem;font-family:var(--mono);">
+        No alerts yet …
+      </div>
+    </div>
+  </div>
+
+  <!-- Live feed table -->
+  <div class="feed-panel">
+    <div class="feed-header">
+      <span>TXN ID</span>
+      <span>BAND</span>
+      <span>DECISION</span>
+      <span>P(FRAUD)</span>
+      <span>LAT (ms)</span>
+      <span>TOP FEATURE</span>
+    </div>
+    <div id="feed-body"></div>
+  </div>
+
+</main>
+
+<!-- ── CLI alert strip ────────────────────────────────────────── -->
+<div id="cli-strip">
+  <span style="color:var(--muted);">$</span>
+  <span id="cli-log">Waiting for transactions …</span>
+</div>
+
+<!-- Chart.js CDN -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+<script>
+// =============================================================================
+// Config
+// =============================================================================
+const API_HOST = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1'
+  ? 'http://localhost:8000'
+  : `${window.location.protocol}//${window.location.host}`;
+
+const WS_URL = API_HOST.replace('http://', 'ws://').replace('https://', 'wss://') + '/ws/stream';
+const METRICS_URL = `${API_HOST}/metrics`;
+const ALERTS_URL  = `${API_HOST}/alerts`;
+
+// =============================================================================
+// State
+// =============================================================================
+const state = {
+  total: 0, low: 0, medium: 0, high: 0,
+  latencies: [],
+  probHistory: [],
+  distLow: 0, distMed: 0, distHigh: 0,
+  txnTimestamps: [],
+};
+
+// =============================================================================
+// Clock
+// =============================================================================
+setInterval(() => {
+  document.getElementById('clock').textContent = new Date().toTimeString().slice(0,8);
+}, 1000);
+
+// =============================================================================
+// Charts
+// =============================================================================
+const chartDefaults = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: { duration: 200 },
+  plugins: { legend: { display: false } },
+  scales: {
+    x: { display: false },
+    y: {
+      grid: { color: 'rgba(26,37,64,.6)' },
+      ticks: { color: '#4a5a7a', font: { family: "'Space Mono'", size: 10 } },
+    }
+  }
+};
+
+// Prob line chart
+const probCtx = document.getElementById('chart-prob').getContext('2d');
+const probChart = new Chart(probCtx, {
+  type: 'line',
+  data: {
+    labels: [],
+    datasets: [{
+      data: [],
+      borderColor: '#3d7fff',
+      backgroundColor: 'rgba(61,127,255,.08)',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      fill: true,
+      tension: 0.4,
+    }]
+  },
+  options: { ...chartDefaults, scales: { ...chartDefaults.scales,
+    y: { ...chartDefaults.scales.y, min: 0, max: 1 }
+  }}
+});
+
+// Distribution doughnut
+const distCtx = document.getElementById('chart-dist').getContext('2d');
+const distChart = new Chart(distCtx, {
+  type: 'doughnut',
+  data: {
+    labels: ['LOW', 'MEDIUM', 'HIGH'],
+    datasets: [{
+      data: [1, 0, 0],
+      backgroundColor: ['rgba(0,200,150,.7)', 'rgba(245,166,35,.7)', 'rgba(255,59,92,.7)'],
+      borderColor: '#080c14',
+      borderWidth: 3,
+      hoverOffset: 6,
+    }]
+  },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    cutout: '68%',
+    plugins: {
+      legend: {
+        display: true,
+        position: 'bottom',
+        labels: {
+          color: '#4a5a7a',
+          font: { family: "'Space Mono'", size: 10 },
+          boxWidth: 10, padding: 12,
+        }
+      }
+    }
+  }
+});
+
+// Latency bar chart
+const latCtx = document.getElementById('chart-latency').getContext('2d');
+const latChart = new Chart(latCtx, {
+  type: 'bar',
+  data: {
+    labels: [],
+    datasets: [{
+      data: [],
+      backgroundColor: (ctx) => {
+        const v = ctx.dataset.data[ctx.dataIndex];
+        if (v > 50) return 'rgba(255,59,92,.7)';
+        if (v > 25) return 'rgba(245,166,35,.7)';
+        return 'rgba(61,127,255,.6)';
+      },
+      borderRadius: 2,
+      maxBarThickness: 18,
+    }]
+  },
+  options: { ...chartDefaults }
+});
+
+// =============================================================================
+// Update KPIs from /metrics endpoint
+// =============================================================================
+async function fetchMetrics() {
+  try {
+    const r = await fetch(METRICS_URL);
+    if (!r.ok) return;
+    const d = await r.json();
+    document.getElementById('kpi-total').textContent     = d.total_scored.toLocaleString();
+    document.getElementById('kpi-fraud-rate').textContent = d.fraud_rate_pct.toFixed(3) + '%';
+    document.getElementById('kpi-low').textContent        = d.risk_counts.low.toLocaleString();
+    document.getElementById('kpi-medium').textContent     = d.risk_counts.medium.toLocaleString();
+    document.getElementById('kpi-high').textContent       = d.risk_counts.high.toLocaleString();
+    document.getElementById('kpi-latency').textContent    = d.latency_ms.mean.toFixed(1);
+
+    distChart.data.datasets[0].data = [
+      d.risk_counts.low, d.risk_counts.medium, d.risk_counts.high
+    ];
+    distChart.update();
+  } catch (_) {}
+}
+
+setInterval(fetchMetrics, 3000);
+fetchMetrics();
+
+// =============================================================================
+// Fetch latest alerts on load
+// =============================================================================
+async function fetchAlerts() {
+  try {
+    const r = await fetch(ALERTS_URL + '?limit=5');
+    if (!r.ok) return;
+    const { alerts } = await r.json();
+    alerts.forEach(addAlertCard);
+  } catch (_) {}
+}
+fetchAlerts();
+
+// =============================================================================
+// Process a scored transaction (from WS push or polling)
+// =============================================================================
+function processTxn(txn) {
+  if (!txn || !txn.fraud_probability) return;
+
+  const prob  = txn.fraud_probability;
+  const band  = txn.risk_band;
+  const lat   = txn.latency_ms;
+  const id    = (txn.transaction_id || 'unknown').slice(0, 12);
+  const ts    = new Date(txn.timestamp || Date.now()).toTimeString().slice(0,8);
+  const shap  = txn.shap_top5 || {};
+  const topFeat = Object.entries(shap)
+    .sort((a,b) => Math.abs(b[1]) - Math.abs(a[1]))[0];
+
+  // ── Update charts ────────────────────────────────────────────
+  const maxPoints = 60;
+  state.probHistory.push(prob);
+  if (state.probHistory.length > maxPoints) state.probHistory.shift();
+  probChart.data.labels     = state.probHistory.map((_, i) => i);
+  probChart.data.datasets[0].data = state.probHistory;
+  probChart.update('none');
+
+  state.latencies.push(lat);
+  if (state.latencies.length > maxPoints) state.latencies.shift();
+  latChart.data.labels = state.latencies.map((_, i) => i);
+  latChart.data.datasets[0].data = state.latencies;
+  latChart.update('none');
+
+  // ── TX rate ──────────────────────────────────────────────────
+  state.txnTimestamps.push(Date.now());
+  state.txnTimestamps = state.txnTimestamps.filter(t => t > Date.now() - 5000);
+  document.getElementById('txn-rate').textContent =
+    (state.txnTimestamps.length / 5).toFixed(1) + ' tx/s';
+
+  // ── Feed row ─────────────────────────────────────────────────
+  const probColor = band === 'HIGH' ? '#ff3b5c' : band === 'MEDIUM' ? '#f5a623' : '#00c896';
+  const probPct   = (prob * 100).toFixed(0);
+  const row = document.createElement('div');
+  row.className = 'feed-row';
+  row.innerHTML = `
+    <span style="color:var(--muted);letter-spacing:.03em">${id}…</span>
+    <span><span class="badge badge-${band}">${band}</span></span>
+    <span style="color:${probColor};font-weight:700">${txn.decision || '—'}</span>
+    <div class="prob-bar-wrap">
+      <span style="color:${probColor}">${prob.toFixed(4)}</span>
+      <div class="prob-bar-bg">
+        <div class="prob-bar-fill" style="width:${probPct}%;background:${probColor}"></div>
+      </div>
+    </div>
+    <span style="color:var(--accent)">${lat.toFixed(1)}</span>
+    <span style="color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">
+      ${topFeat ? topFeat[0] + ' (' + (topFeat[1] > 0 ? '+' : '') + topFeat[1].toFixed(3) + ')' : '—'}
+    </span>
+  `;
+  const body = document.getElementById('feed-body');
+  body.prepend(row);
+  // Keep max 100 rows
+  while (body.children.length > 100) body.removeChild(body.lastChild);
+
+  // ── Alerts ───────────────────────────────────────────────────
+  if (band === 'HIGH') addAlertCard(txn);
+
+  // ── CLI strip ────────────────────────────────────────────────
+  const flag = band === 'HIGH' ? '🚨' : band === 'MEDIUM' ? '⚠️ ' : '✅';
+  document.getElementById('cli-log').textContent =
+    `[${ts}] ${flag} ${id}  p=${prob.toFixed(6)}  band=${band}  lat=${lat.toFixed(1)}ms`;
+}
+
+// =============================================================================
+// Alert card
+// =============================================================================
+function addAlertCard(txn) {
+  const list = document.getElementById('alerts-list');
+  // Clear placeholder
+  if (list.querySelector('div[style]')) list.innerHTML = '';
+
+  const prob  = (txn.fraud_probability * 100).toFixed(2);
+  const id    = (txn.transaction_id || '').slice(0, 16);
+  const ts    = new Date(txn.timestamp || Date.now()).toLocaleTimeString();
+  const shap  = txn.shap_top5 || {};
+  const tags  = Object.entries(shap)
+    .sort((a,b) => Math.abs(b[1]) - Math.abs(a[1]))
+    .slice(0,4)
+    .map(([k,v]) => `<span class="shap-tag">${k}: ${v > 0 ? '+' : ''}${v.toFixed(3)}</span>`)
+    .join('');
+
+  const card = document.createElement('div');
+  card.className = 'alert-card';
+  card.innerHTML = `
+    <div class="alert-id">${id}…</div>
+    <div class="alert-prob">${prob}% FRAUD PROBABILITY</div>
+    <div class="alert-shap">${tags}</div>
+    <div class="alert-time">${ts}</div>
+  `;
+  list.prepend(card);
+  while (list.children.length > 30) list.removeChild(list.lastChild);
+}
+
+// =============================================================================
+// WebSocket connection with auto-reconnect
+// =============================================================================
+let ws, reconnectTimer, reconnectDelay = 2000;
+
+function connectWS() {
+  const dot   = document.getElementById('ws-dot');
+  const label = document.getElementById('ws-label');
+
+  dot.className = '';
+  label.textContent = 'CONNECTING…';
+
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    dot.className = 'connected';
+    label.textContent = 'LIVE';
+    reconnectDelay = 2000;
+    // Keep alive ping every 20s
+    clearInterval(reconnectTimer);
+    reconnectTimer = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN)
+        ws.send(JSON.stringify({ action: 'ping' }));
+    }, 20000);
+  };
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data);
+      if (data.action === 'pong' || data.action === 'heartbeat') return;
+      processTxn(data);
+    } catch (_) {}
+  };
+
+  ws.onerror = () => {
+    dot.className = 'error';
+    label.textContent = 'ERROR';
+  };
+
+  ws.onclose = () => {
+    dot.className = '';
+    label.textContent = 'RECONNECTING…';
+    clearInterval(reconnectTimer);
+    setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 15000);
+      connectWS();
+    }, reconnectDelay);
+  };
+}
+
+// =============================================================================
+// Fallback: poll /metrics and /alerts if WS is not available
+// =============================================================================
+let lastAlertTs = null;
+
+async function pollAlerts() {
+  try {
+    const r = await fetch(ALERTS_URL + '?limit=3');
+    if (!r.ok) return;
+    const { alerts } = await r.json();
+    alerts.forEach(a => {
+      if (a.timestamp !== lastAlertTs) {
+        lastAlertTs = a.timestamp;
+        addAlertCard(a);
+      }
+    });
+  } catch (_) {}
+}
+
+// Start
+connectWS();
+
+// Also poll every 5s as a fallback data source
+setInterval(pollAlerts, 5000);
+</script>
+</body>
+</html>
