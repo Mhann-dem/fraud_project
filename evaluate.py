@@ -160,7 +160,9 @@ def shap_explain(meta_model, test_matrix: np.ndarray,
 # =============================================================================
 
 def measure_latency(meta_model, base_models: list,
-                    X_sample: np.ndarray, n_runs: int = 200) -> dict:
+                    X_sample: np.ndarray,
+                    X_sample_seq: np.ndarray | None = None,
+                    n_runs: int = 200) -> dict:
     """
     §5.7 — Full scoring latency per transaction:
     base-model inference for each learner + meta-model inference.
@@ -169,10 +171,34 @@ def measure_latency(meta_model, base_models: list,
     lats = []
     for i in range(n_runs):
         row = X_sample[i % len(X_sample)].reshape(1, -1)
+        row_seq = None
+        if X_sample_seq is not None:
+            row_seq = X_sample_seq[i % len(X_sample_seq)].reshape(
+                1, *X_sample_seq.shape[1:]
+            )
+
         t0 = time.perf_counter()
-        base_probs = np.array(
-            [m.predict_proba(row)[0, 1] for m in base_models]
-        ).reshape(1, -1)
+        probs = []
+        for m in base_models:
+            if hasattr(m, "predict_proba"):
+                probs.append(m.predict_proba(row)[0, 1])
+            elif row_seq is not None:
+                probs.append(m.predict(row_seq, verbose=0).ravel()[0])
+            else:
+                raise ValueError(
+                    "LSTM base model requires sequence input via X_sample_seq"
+                )
+
+        base_probs = np.array(probs).reshape(1, -1)
+        if hasattr(meta_model, "n_features_in_"):
+            expected = meta_model.n_features_in_
+            if base_probs.shape[1] < expected:
+                pad = np.full((1, expected - base_probs.shape[1]), 0.5,
+                              dtype=base_probs.dtype)
+                base_probs = np.concatenate([base_probs, pad], axis=1)
+            elif base_probs.shape[1] > expected:
+                base_probs = base_probs[:, :expected]
+
         _ = meta_model.predict_proba(base_probs)[0, 1]
         lats.append((time.perf_counter() - t0) * 1000)
 

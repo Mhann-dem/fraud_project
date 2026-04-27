@@ -21,9 +21,9 @@ from sklearn.model_selection import train_test_split
 from imblearn.combine import SMOTEENN
 import lightgbm as lgb
 
-from config import SEED, TRAIN_RATIO, MODEL_DIR, RISK_LOW, RISK_HIGH
+from config import SEED, TRAIN_RATIO, MODEL_DIR, RISK_LOW, RISK_HIGH, LSTM_PARAMS
 from data_loader import load_creditcard, load_ieee, load_paysim
-from models import make_lr, make_rf, make_xgb, make_lgb
+from models import make_lr, make_rf, make_xgb, make_lgb, make_lstm
 from stacking import generate_oof, train_meta, build_lstm_sequences
 from evaluate import (tune_threshold, evaluate, cross_val_report,
                       save_confusion, shap_explain, measure_latency,
@@ -166,7 +166,34 @@ def run_pipeline(tag: str, X: np.ndarray, y: np.ndarray,
     lgb_f.fit(Xtr2, ytr2, eval_set=[(Xv2, yv2)],
               callbacks=[lgb.early_stopping(30, verbose=False),
                          lgb.log_evaluation(-1)])
-    latency = measure_latency(meta, [lr_f, rf_f, xgb_f, lgb_f], X_te)
+
+    lstm_f = None
+    if use_lstm:
+        print("  Training LSTM base model for latency measurement …")
+        Xtr_seq2, Xv_seq2, ytr2, yv2 = train_test_split(
+            X_tr_seq, y_tr, test_size=0.1,
+            stratify=y_tr, random_state=SEED
+        )
+        lstm_f = make_lstm(X_tr_seq.shape[2])
+        cw = {0: 1.0, 1: float(scale_pos)}
+        es = tf.keras.callbacks.EarlyStopping(
+            monitor="val_loss", patience=5, restore_best_weights=True
+        )
+        lstm_f.fit(
+            Xtr_seq2, ytr2,
+            validation_data=(Xv_seq2, yv2),
+            epochs=LSTM_PARAMS["epochs"],
+            batch_size=LSTM_PARAMS["batch_size"],
+            class_weight=cw,
+            callbacks=[es],
+            verbose=0
+        )
+
+    latency_models = [lr_f, rf_f, xgb_f, lgb_f]
+    if lstm_f is not None:
+        latency_models.append(lstm_f)
+    latency = measure_latency(meta, latency_models, X_te,
+                              X_te_seq if use_lstm else None)
     all_metrics["latency"] = latency
 
     # 10. Save artefacts
