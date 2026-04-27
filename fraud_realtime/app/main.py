@@ -39,7 +39,7 @@ from fastapi import (
     UploadFile, File, HTTPException, BackgroundTasks
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -216,6 +216,7 @@ def build_response(txn_id: str, prob: float, shap5: dict, latency: float) -> dic
 
 async def broadcast(message: dict):
     """Push a scored transaction to all connected WebSocket clients."""
+    global WS_CLIENTS
     if not WS_CLIENTS:
         return
     payload = json.dumps(message)
@@ -387,6 +388,16 @@ async def websocket_stream(ws: WebSocket):
 async def dashboard():
     """Serve the live monitoring dashboard."""
     html_path = STATIC_DIR / "dashboard.html"
-    if html_path.exists():
-        return HTMLResponse(html_path.read_text())
-    return HTMLResponse("<h2>Dashboard not found — run build_dashboard.py</h2>", status_code=404)
+    if not html_path.exists():
+        log.error("Dashboard file missing: %s", html_path)
+        return HTMLResponse("<h2>Dashboard not found — place dashboard.html in fraud_realtime/static</h2>", status_code=404)
+
+    try:
+        return FileResponse(html_path, media_type="text/html")
+    except Exception as exc:
+        log.exception("Failed to serve dashboard HTML")
+        return HTMLResponse(
+            "<h2>Internal server error while loading dashboard.</h2>"
+            "<p>Check the server logs for details.</p>",
+            status_code=500,
+        )

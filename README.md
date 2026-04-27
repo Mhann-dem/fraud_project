@@ -178,11 +178,13 @@ pip install -r requirements.txt
 uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-Then open `http://localhost:8000/dashboard` in your browser and run the simulator in a second terminal:
+Then open `http://localhost:8000/dashboard` or `http://127.0.0.1:8000/dashboard` in your browser and run the simulator in a second terminal:
 
 ```bash
 python stream_simulator.py --demo --rate 5
 ```
+
+If the dashboard still returns an error, confirm the app is running from `fraud_realtime/` and that `fraud_realtime/static/dashboard.html` exists.
 
 You will see live transactions scoring in the dashboard. Once you have trained a real model (see below), replace the mock scores with the real ones.
 

@@ -49,9 +49,9 @@ uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
 
 | URL | Description |
 |-----|-------------|
-| `http://localhost:8000/dashboard` | Live browser dashboard |
-| `http://localhost:8000/docs`      | Interactive API docs (Swagger) |
-| `http://localhost:8000/predict`   | POST a single transaction |
+| `http://localhost:8000/dashboard` or `http://127.0.0.1:8000/dashboard` | Live browser dashboard |
+| `http://localhost:8000/docs` or `http://127.0.0.1:8000/docs`      | Interactive API docs (Swagger) |
+| `http://localhost:8000/predict` or `http://127.0.0.1:8000/predict`   | POST a single transaction |
 | `http://localhost:8000/predict/batch` | POST a CSV file |
 | `ws://localhost:8000/ws/stream`   | WebSocket live feed |
 | `http://localhost:8000/metrics`   | Aggregate fraud stats |
