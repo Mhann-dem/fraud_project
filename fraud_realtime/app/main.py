@@ -51,6 +51,10 @@ log = logging.getLogger(__name__)
 BASE_DIR    = Path(__file__).parent.parent
 MODEL_PATH  = BASE_DIR / "models" / "stacked_ensemble.joblib"
 SCALER_PATH = BASE_DIR / "models" / "scaler.joblib"
+BASE_MODELS = [BASE_DIR / "models" / name for name in [
+    "base_lr.joblib", "base_rf.joblib", "base_xgb.joblib", "base_lgb.joblib"
+]]
+BASE_MODELS_BUNDLE = BASE_DIR / "models" / "base_models.joblib"
 STATIC_DIR  = BASE_DIR / "static"
 
 # ── Risk band thresholds ──────────────────────────────────────────────────────
@@ -81,23 +85,42 @@ class FraudScorer:
     """Thin wrapper around the trained stacked ensemble + scaler."""
 
     def __init__(self):
-        self.model  = None
+        self.model = None
         self.scaler = None
+        self.base_models: list[Any] = []
         self.explainer = None
+        self.base_model_names = ["base_lr", "base_rf", "base_xgb", "base_lgb"]
         self._load()
 
     def _load(self):
-        if MODEL_PATH.exists() and SCALER_PATH.exists():
-            log.info("Loading trained model from disk …")
-            self.model  = joblib.load(MODEL_PATH)
+        if MODEL_PATH.exists() and SCALER_PATH.exists() and all(p.exists() for p in BASE_MODELS):
+            log.info("Loading trained stacked ensemble and base models from disk …")
+            self.model = joblib.load(MODEL_PATH)
             self.scaler = joblib.load(SCALER_PATH)
+            self.base_models = [joblib.load(p) for p in BASE_MODELS]
             self.explainer = shap.TreeExplainer(self.model)
-            log.info("Model loaded ✓")
-        else:
-            log.warning(
-                "No saved model found — using mock scorer. "
-                "Run train_and_save.py first to create a real model."
-            )
+            log.info("Model and base learners loaded ✓")
+            return
+
+        if MODEL_PATH.exists() and SCALER_PATH.exists() and BASE_MODELS_BUNDLE.exists():
+            log.info("Loading stacked ensemble and bundled base models from disk …")
+            self.model = joblib.load(MODEL_PATH)
+            self.scaler = joblib.load(SCALER_PATH)
+            bundle = joblib.load(BASE_MODELS_BUNDLE)
+            if isinstance(bundle, dict):
+                self.base_models = list(bundle.values())
+            else:
+                self.base_models = list(bundle)
+            self.explainer = shap.TreeExplainer(self.model)
+            log.info("Model and bundled base learners loaded ✓")
+            return
+
+        missing = [str(p.name) for p in [MODEL_PATH, SCALER_PATH, *BASE_MODELS, BASE_MODELS_BUNDLE] if not p.exists()]
+        log.warning(
+            "Incomplete model artefacts (%s) — using mock scorer. "
+            "Run train_fast.py or train_and_save.py to create the full stack.",
+            ", ".join(missing)
+        )
 
     def _mock_score(self, features: np.ndarray) -> tuple[float, dict]:
         """Return a random fraud probability when no model is available (demo mode)."""
@@ -111,17 +134,18 @@ class FraudScorer:
         Returns (fraud_probability, shap_top5_dict).
         features shape: (1, n_features)
         """
-        if self.model is None:
+        if self.model is None or not self.base_models:
             return self._mock_score(features)
 
         scaled = self.scaler.transform(features)
-        prob   = float(self.model.predict_proba(scaled)[0, 1])
+        base_probs = np.column_stack([
+            m.predict_proba(scaled)[:, 1] for m in self.base_models
+        ])
+        prob = float(self.model.predict_proba(base_probs)[0, 1])
 
-        shap_vals = self.explainer.shap_values(scaled)[0]
-        top5_idx  = np.argsort(np.abs(shap_vals))[::-1][:5]
-        feature_names = (self.scaler.feature_names_in_
-                         if hasattr(self.scaler, "feature_names_in_") else
-                         [f"f{i}" for i in range(len(shap_vals))])
+        shap_vals = self.explainer.shap_values(base_probs)[0]
+        top5_idx = np.argsort(np.abs(shap_vals))[::-1][:5]
+        feature_names = self.base_model_names
         shap_dict = {feature_names[i]: round(float(shap_vals[i]), 4) for i in top5_idx}
 
         return prob, shap_dict
@@ -159,6 +183,7 @@ class PredictionResponse(BaseModel):
     decision:          str          # PASS | REVIEW | BLOCK
     shap_top5:         dict
     latency_ms:        float
+    demo_mode:         bool
     timestamp:         str
 
 
@@ -201,7 +226,7 @@ def risk_band(prob: float) -> tuple[str, str]:
     return "LOW", "PASS"
 
 
-def build_response(txn_id: str, prob: float, shap5: dict, latency: float) -> dict:
+def build_response(txn_id: str, prob: float, shap5: dict, latency: float, demo_mode: bool) -> dict:
     band, decision = risk_band(prob)
     return {
         "transaction_id":   txn_id,
@@ -210,6 +235,7 @@ def build_response(txn_id: str, prob: float, shap5: dict, latency: float) -> dic
         "decision":          decision,
         "shap_top5":         shap5,
         "latency_ms":        round(latency, 2),
+        "demo_mode":         demo_mode,
         "timestamp":         datetime.now(timezone.utc).isoformat(),
     }
 
@@ -273,8 +299,12 @@ if STATIC_DIR.exists():
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "model_loaded": SCORER.model is not None,
-            "uptime_since": STATS["started_at"]}
+    return {
+        "status": "ok",
+        "model_loaded": SCORER.model is not None,
+        "demo_mode": SCORER.model is None,
+        "uptime_since": STATS["started_at"],
+    }
 
 
 @app.get("/metrics")
@@ -290,6 +320,7 @@ async def metrics():
             "p95":   round(np.percentile(lats, 95), 2) if lats else 0,
             "p99":   round(np.percentile(lats, 99), 2) if lats else 0,
         },
+        "demo_mode": SCORER.model is None,
     }
 
 
@@ -305,8 +336,9 @@ async def predict(txn: Transaction, background_tasks: BackgroundTasks):
     features = txn_to_features(txn)
     prob, shap5 = SCORER.score(features)
     latency = (time.perf_counter() - t0) * 1000
+    demo_mode = SCORER.model is None
 
-    response = build_response(txn.transaction_id, prob, shap5, latency)
+    response = build_response(txn.transaction_id, prob, shap5, latency, demo_mode)
     background_tasks.add_task(record, response, txn.dict())
     background_tasks.add_task(broadcast, response)
 
@@ -337,7 +369,8 @@ async def predict_batch(file: UploadFile = File(...)):
         t0 = time.perf_counter()
         prob, shap5 = SCORER.score(txn_to_features(txn))
         latency = (time.perf_counter() - t0) * 1000
-        resp = build_response(txn.transaction_id, prob, shap5, latency)
+        demo_mode = SCORER.model is None
+        resp = build_response(txn.transaction_id, prob, shap5, latency, demo_mode)
         record(resp, row.to_dict())
         results.append(resp)
 

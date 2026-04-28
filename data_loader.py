@@ -90,9 +90,9 @@ def load_ieee():
 
     # Impute
     for col in num_cols:
-        df[col].fillna(df[col].median(), inplace=True)
+        df[col] = df[col].fillna(df[col].median())
     for col in cat_cols:
-        df[col].fillna("MISSING", inplace=True)
+        df[col] = df[col].fillna("MISSING")
 
     # Encode: one-hot (low cardinality) vs target encode (high cardinality)
     low_card  = [c for c in cat_cols if df[c].nunique() <= 20]
@@ -118,38 +118,48 @@ def load_ieee():
 def _engineer_paysim_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     §4.5 — Five behavioural features built before identifier columns are dropped.
+    Uses rolling window instead of expanding for computational efficiency on large datasets.
 
-    (1) transaction_velocity  — rolling count of prior transfers per origin account
-    (2) amount_deviation      — z-score of amount vs account rolling history
+    (1) transaction_velocity  — rolling count (last 100) of transfers per origin account
+    (2) amount_deviation      — z-score of amount vs account rolling history (last 100)
     (3) balance_drop_flag     — 1 when origin balance collapses to near-zero
-    (4) counterparty_spread   — cumulative distinct destinations per origin
+    (4) counterparty_spread   — rolling distinct destinations per origin (last 100)
     (5) error_balance         — |oldOrig + amount − newOrig| recording gap
     """
     df = df.sort_values(["nameOrig", "step"]).copy()
 
-    # (1)
+    # (1) Rolling transaction velocity (count in last 100 transactions)
     df["transaction_velocity"] = (
         df.groupby("nameOrig")["step"]
-          .transform(lambda s: s.expanding().count().shift(1).fillna(0))
+          .transform(lambda s: s.rolling(window=100, min_periods=1).count() - 1)
+          .fillna(0)
     )
-    # (2)
+    
+    # (2) Amount deviation: z-score vs rolling mean/std (last 100 transactions)
     rm = df.groupby("nameOrig")["amount"].transform(
-             lambda s: s.expanding().mean().shift(1))
+             lambda s: s.rolling(window=100, min_periods=1).mean().shift(1))
     rs = df.groupby("nameOrig")["amount"].transform(
-             lambda s: s.expanding().std().shift(1).fillna(1))
+             lambda s: s.rolling(window=100, min_periods=1).std().shift(1).fillna(1))
     df["amount_deviation"] = (df["amount"] - rm) / rs.clip(lower=1e-6)
+    df["amount_deviation"] = df["amount_deviation"].fillna(0)
 
-    # (3)
+    # (3) Balance drop flag
     df["balance_drop_flag"] = (
         (df["newbalanceOrig"] < 1.0) & (df["oldbalanceOrg"] > 0)
     ).astype(int)
 
-    # (4)
+    # (4) Counterparty spread: distinct destinations in last 100 transactions
+    df["nameDest_code"] = df["nameDest"].astype("category").cat.codes
     df["counterparty_spread"] = (
-        df.groupby("nameOrig")["nameDest"]
-          .transform(lambda s: s.expanding().nunique().shift(1).fillna(0))
+        df.groupby("nameOrig")["nameDest_code"]
+          .transform(lambda s: s.rolling(window=100, min_periods=1)
+                               .apply(lambda x: len(np.unique(x)), raw=True)
+                               .shift(1))
+          .fillna(0)
     )
-    # (5)
+    df.drop(columns=["nameDest_code"], inplace=True)
+
+    # (5) Error balance: absolute difference
     df["error_balance"] = (
         df["oldbalanceOrg"] + df["amount"] - df["newbalanceOrig"]
     ).abs()
@@ -157,7 +167,7 @@ def _engineer_paysim_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_paysim():
+def load_paysim(sample_fraction: float = 1.0):
     """
     Kaggle / Lopez-Rojas et al. (2016) — PaySim mobile money simulation.
     ~1.05 M rows | ~1.3 % fraud rate
@@ -166,17 +176,34 @@ def load_paysim():
     - isFlaggedFraud  → near-zero variance, target-adjacent (Kaufman et al. 2012)
     - nameOrig / nameDest → account ID keys, not predictive features
 
+    Args:
+        sample_fraction: float in (0, 1]. Use < 1.0 for faster prototyping.
+                        1.0 = full dataset (default), 0.1 = 10% sample
+
     Returns scaler alongside arrays so the API can reuse it at inference.
     """
-    print("\n[3/3] PaySim Mobile Money Simulation")
+    print(f"\n[3/3] PaySim Mobile Money Simulation")
     df = pd.read_csv(DATA["paysim"])
     df.columns = [c.strip() for c in df.columns]
-    df.drop_duplicates(inplace=True)
+    
+    # For large datasets, skip drop_duplicates on read (time-intensive)
+    # Just sample directly if needed
+    if sample_fraction < 1.0:
+        print(f"  Sampling {sample_fraction*100:.0f}% of data for fast prototyping...")
+        sample_size = int(len(df) * sample_fraction)
+        df = df.sample(n=sample_size, random_state=SEED)
+        print(f"  Sample size: {len(df):,} rows")
+    else:
+        # Only drop duplicates if using full dataset
+        print(f"  Removing duplicates from {len(df):,} rows...")
+        df.drop_duplicates(inplace=True)
+        print(f"  After dedup: {len(df):,} rows")
 
     # Leakage removal
     df.drop(columns=["isFlaggedFraud"], errors="ignore", inplace=True)
 
     # Feature engineering (must happen before dropping name cols)
+    print(f"  Engineering features...")
     df = _engineer_paysim_features(df)
     df.drop(columns=["nameOrig", "nameDest"], inplace=True)
 

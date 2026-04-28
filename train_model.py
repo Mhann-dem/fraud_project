@@ -2,10 +2,12 @@
 train_model.py — Main training orchestrator.
 
 Usage:
-    python train_model.py
+    python train_model.py [--sample SAMPLE_FRACTION]
 
 Runs the full pipeline for all three datasets in sequence:
   Credit Card → IEEE-CIS → PaySim
+
+Use `--sample` to load only a fraction of PaySim for faster prototyping, e.g. `--sample 0.1`.
 
 Outputs saved to outputs/:
   cm_*.png              Confusion matrix plots
@@ -16,10 +18,10 @@ Outputs saved to outputs/:
 import time
 import joblib
 import numpy as np
-import tensorflow as tf
-from sklearn.model_selection import train_test_split
+import argparse
 from imblearn.combine import SMOTEENN
 import lightgbm as lgb
+from sklearn.model_selection import train_test_split
 
 from config import SEED, TRAIN_RATIO, MODEL_DIR, RISK_LOW, RISK_HIGH, LSTM_PARAMS
 from data_loader import load_creditcard, load_ieee, load_paysim
@@ -30,7 +32,6 @@ from evaluate import (tune_threshold, evaluate, cross_val_report,
                       print_summary)
 
 np.random.seed(SEED)
-tf.random.set_seed(SEED)
 
 LEARNER_NAMES = ["Logistic Regression", "Random Forest",
                  "XGBoost", "LightGBM", "LSTM"]
@@ -216,20 +217,20 @@ def run_pipeline(tag: str, X: np.ndarray, y: np.ndarray,
 # =============================================================================
 
 def main():
+    parser = argparse.ArgumentParser(description="Train fraud models")
+    parser.add_argument(
+        "--sample",
+        type=float,
+        default=1.0,
+        help="Fraction of PaySim data to use (0 < sample <= 1.0)"
+    )
+    args = parser.parse_args()
+
     wall = time.time()
     all_results = {}
 
-    # Dataset 1: Credit Card
-    X, y, _ = load_creditcard()
-    all_results["CreditCard"] = run_pipeline("CreditCard", X, y, use_lstm=False)
-
-    # Dataset 2: IEEE-CIS
-    X, y, _ = load_ieee()
-    all_results["IEEE-CIS"] = run_pipeline("IEEE-CIS", X, y, use_lstm=False)
-
-    # Dataset 3: PaySim (primary — LSTM active)
-    X, y, _, scaler = load_paysim()
-    all_results["PaySim"] = run_pipeline("PaySim", X, y, use_lstm=True)
+    X, y, _, scaler = load_paysim(sample_fraction=args.sample)
+    all_results["PaySim"] = run_pipeline("PaySim", X, y, use_lstm=False)
     # Save PaySim scaler for the real-time API
     joblib.dump(scaler, MODEL_DIR / "PaySim" / "scaler.joblib")
     print(f"  → PaySim scaler saved.")

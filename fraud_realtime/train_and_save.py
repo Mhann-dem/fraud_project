@@ -6,6 +6,10 @@ Trains the stacked ensemble on PaySim and saves:
   models/stacked_ensemble.joblib  — trained XGBoost meta-model
   models/scaler.joblib            — fitted MinMaxScaler
   models/base_models.joblib       — all four base learners (for retraining)
+  models/base_lr.joblib           — logistic regression base learner
+  models/base_rf.joblib           — random forest base learner
+  models/base_xgb.joblib          — XGBoost base learner
+  models/base_lgb.joblib          — LightGBM base learner
 
 Run once before starting the API:
     python train_and_save.py --data data/PS_20174392719_1491204439457_log.csv
@@ -46,38 +50,52 @@ TRANSACTION_TYPES = ["CASH_IN", "CASH_OUT", "DEBIT", "PAYMENT", "TRANSFER"]
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(["nameOrig", "step"]).copy()
 
-    # 1. Transaction velocity
+    # 1. Transaction velocity (rolling count of prior steps)
     df["transaction_velocity"] = (
         df.groupby("nameOrig")["step"]
-        .transform(lambda s: s.expanding().count().shift(1).fillna(0))
+        .transform(lambda s: s.rolling(window=100, min_periods=1).count() - 1)
+        .fillna(0)
     )
+
     # 2. Amount deviation (rolling z-score)
     roll_mean = df.groupby("nameOrig")["amount"].transform(
-        lambda s: s.expanding().mean().shift(1))
-    roll_std  = df.groupby("nameOrig")["amount"].transform(
-        lambda s: s.expanding().std().shift(1).fillna(1))
+        lambda s: s.rolling(window=100, min_periods=1).mean().shift(1))
+    roll_std = df.groupby("nameOrig")["amount"].transform(
+        lambda s: s.rolling(window=100, min_periods=1).std().shift(1).fillna(1))
     df["amount_deviation"] = (df["amount"] - roll_mean) / roll_std.clip(lower=1e-6)
+    df["amount_deviation"] = df["amount_deviation"].fillna(0)
 
     # 3. Balance drop flag
     df["balance_drop_flag"] = (
         (df["newbalanceOrig"] < 1.0) & (df["oldbalanceOrg"] > 0)
     ).astype(int)
 
-    # 4. Counterparty spread
+    # 4. Counterparty spread (rolling distinct destinations per origin)
+    df["nameDest_code"] = df["nameDest"].astype("category").cat.codes
     df["counterparty_spread"] = (
-        df.groupby("nameOrig")["nameDest"]
-        .transform(lambda s: s.expanding().nunique().shift(1).fillna(0))
+        df.groupby("nameOrig")["nameDest_code"]
+        .transform(lambda s: s.rolling(window=100, min_periods=1)
+                              .apply(lambda x: len(np.unique(x)), raw=True)
+                              .shift(1))
+        .fillna(0)
     )
+    df.drop(columns=["nameDest_code"], inplace=True)
+
     # 5. Error balance
     df["error_balance"] = (df["oldbalanceOrg"] + df["amount"] - df["newbalanceOrig"]).abs()
 
     return df
 
 
-def load_and_prepare(csv_path: str):
+def load_and_prepare(csv_path: str, sample_fraction: float = 1.0):
     log.info(f"Loading {csv_path} …")
     df = pd.read_csv(csv_path)
     df.columns = [c.strip() for c in df.columns]
+
+    if sample_fraction < 1.0:
+        sample_size = int(len(df) * sample_fraction)
+        log.info(f"Sampling {sample_fraction:.2f} fraction → {sample_size:,} rows for prototyping …")
+        df = df.sample(frac=sample_fraction, random_state=SEED)
 
     # Drop leakage
     df.drop(columns=["isFlaggedFraud"], errors="ignore", inplace=True)
@@ -152,8 +170,10 @@ def generate_oof(models: dict, X_train, y_train, X_test):
             Xtr, Xval = X_train[tr_idx], X_train[val_idx]
             ytr, yval = y_train[tr_idx], y_train[val_idx]
 
-            if name in ("XGBoost", "LightGBM"):
+            if name == "XGBoost":
                 model.fit(Xtr, ytr, eval_set=[(Xval, yval)], verbose=False)
+            elif name == "LightGBM":
+                model.fit(Xtr, ytr, eval_set=[(Xval, yval)])
             else:
                 model.fit(Xtr, ytr)
 
@@ -163,11 +183,15 @@ def generate_oof(models: dict, X_train, y_train, X_test):
         test_preds[:, col] = fold_test.mean(axis=1)
 
         # Refit on full training data for the saved base model
-        if name in ("XGBoost", "LightGBM"):
+        if name == "XGBoost":
             # Need a small eval set for early stopping
             Xtr2, Xv2, ytr2, yv2 = train_test_split(
                 X_train, y_train, test_size=0.1, stratify=y_train, random_state=SEED)
             model.fit(Xtr2, ytr2, eval_set=[(Xv2, yv2)], verbose=False)
+        elif name == "LightGBM":
+            Xtr2, Xv2, ytr2, yv2 = train_test_split(
+                X_train, y_train, test_size=0.1, stratify=y_train, random_state=SEED)
+            model.fit(Xtr2, ytr2, eval_set=[(Xv2, yv2)])
         else:
             model.fit(X_train, y_train)
 
@@ -201,9 +225,18 @@ def train_meta(oof, y_train, test_preds, y_test, scale_pos):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", required=True, help="Path to PaySim CSV")
+    parser.add_argument(
+        "--sample",
+        type=float,
+        default=1.0,
+        help="Fraction of PaySim rows to load for faster prototyping (0 < sample <= 1.0)"
+    )
     args = parser.parse_args()
 
-    df, y = load_and_prepare(args.data)
+    if not (0.0 < args.sample <= 1.0):
+        parser.error("--sample must be greater than 0 and at most 1.0")
+
+    df, y = load_and_prepare(args.data, sample_fraction=args.sample)
 
     # Time-based split (no shuffle to prevent future leakage)
     split     = int(len(df) * 0.60)
@@ -211,6 +244,13 @@ def main():
     X_test_df  = df.iloc[split:]
     y_train    = y[:split]
     y_test     = y[split:]
+
+    minority_count = int((y_train == 1).sum())
+    if minority_count < 6:
+        raise ValueError(
+            f"Sample too small for SMOTE-ENN: training data has only {minority_count} fraud "
+            "examples. Increase --sample or use the full dataset."
+        )
 
     # Fit scaler on train only
     scaler = MinMaxScaler()
@@ -239,11 +279,19 @@ def main():
     joblib.dump(meta,          OUT_DIR / "stacked_ensemble.joblib")
     joblib.dump(scaler,        OUT_DIR / "scaler.joblib")
     joblib.dump(fitted_models, OUT_DIR / "base_models.joblib")
+    joblib.dump(fitted_models["LogReg"],   OUT_DIR / "base_lr.joblib")
+    joblib.dump(fitted_models["RandForest"], OUT_DIR / "base_rf.joblib")
+    joblib.dump(fitted_models["XGBoost"],   OUT_DIR / "base_xgb.joblib")
+    joblib.dump(fitted_models["LightGBM"],  OUT_DIR / "base_lgb.joblib")
 
     log.info(f"\nArtifacts saved to {OUT_DIR}/")
     log.info("  stacked_ensemble.joblib")
     log.info("  scaler.joblib")
     log.info("  base_models.joblib")
+    log.info("  base_lr.joblib")
+    log.info("  base_rf.joblib")
+    log.info("  base_xgb.joblib")
+    log.info("  base_lgb.joblib")
 
 
 if __name__ == "__main__":

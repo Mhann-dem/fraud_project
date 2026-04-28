@@ -32,10 +32,21 @@ pip install -r requirements.txt
 python train_and_save.py --data /path/to/PS_20174392719_log.csv
 ```
 
-Saves three files to `models/`:
+# Faster prototype mode
+Use `--sample` to train on a smaller PaySim subset. Avoid extremely small fractions because SMOTE-ENN requires enough fraud examples in the training split:
+
+```bash
+python train_and_save.py --data /path/to/PS_20174392719_log.csv --sample 0.1
+```
+
+Saves seven files to `models/`:
 - `stacked_ensemble.joblib`  — XGBoost meta-model
 - `scaler.joblib`            — fitted MinMaxScaler
-- `base_models.joblib`       — all four base learners
+- `base_models.joblib`       — all four base learners bundled together
+- `base_lr.joblib`           — logistic regression base learner
+- `base_rf.joblib`           — random forest base learner
+- `base_xgb.joblib`          — XGBoost base learner
+- `base_lgb.joblib`          — LightGBM base learner
 
 > **No model yet?** The API runs in **demo mode** (mock scores) until you train.
 

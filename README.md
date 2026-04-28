@@ -211,6 +211,12 @@ DATA = {
 python train_model.py
 ```
 
+For faster PaySim prototyping, run:
+
+```bash
+python train_model.py --sample 0.1
+```
+
 This runs the full pipeline for all three datasets in sequence:
 
 1. Loads and cleans each dataset
@@ -273,9 +279,20 @@ After training completes, verify these in the `outputs/` folder:
 ```bash
 cp outputs/models/PaySim/scaler.joblib        fraud_realtime/models/scaler.joblib
 cp outputs/models/PaySim/meta_xgboost.joblib  fraud_realtime/models/stacked_ensemble.joblib
+cp outputs/models/PaySim/base_lr.joblib       fraud_realtime/models/base_lr.joblib
+cp outputs/models/PaySim/base_rf.joblib       fraud_realtime/models/base_rf.joblib
+cp outputs/models/PaySim/base_xgb.joblib      fraud_realtime/models/base_xgb.joblib
+cp outputs/models/PaySim/base_lgb.joblib      fraud_realtime/models/base_lgb.joblib
 ```
 
-Alternatively, run `train_and_save.py` inside `fraud_realtime/` which retrains and saves directly:
+Alternatively, run `train_and_save.py` inside `fraud_realtime/` which retrains and saves all required files directly:
+
+```bash
+cd fraud_realtime
+python train_and_save.py --data ../data/PS_20174392719_1491204439457_log.csv --sample 0.1
+```
+
+Use `--sample` when the PaySim CSV is too large to process full size during development.
 
 ```bash
 cd fraud_realtime
