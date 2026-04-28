@@ -177,8 +177,12 @@ def load_paysim(sample_fraction: float = 1.0):
     - nameOrig / nameDest → account ID keys, not predictive features
 
     Args:
-        sample_fraction: float in (0, 1]. Use < 1.0 for faster prototyping.
-                        1.0 = full dataset (default), 0.1 = 10% sample
+        sample_fraction: float in (0.005, 1.0]. Use < 1.0 for faster prototyping.
+                        Recommended values:
+                        - 0.01: Quick testing (10k rows, ~5 min training)
+                        - 0.05: Development work (50k rows, ~15-20 min training)
+                        - 1.0: Production training (1M+ rows, ~45-90 min training)
+                        Minimum 0.005 required for SMOTE-ENN compatibility.
 
     Returns scaler alongside arrays so the API can reuse it at inference.
     """

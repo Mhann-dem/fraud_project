@@ -7,7 +7,14 @@ Usage:
 Runs the full pipeline for all three datasets in sequence:
   Credit Card → IEEE-CIS → PaySim
 
-Use `--sample` to load only a fraction of PaySim for faster prototyping, e.g. `--sample 0.1`.
+Use `--sample` to load only a fraction of PaySim for faster prototyping.
+
+Recommended sample sizes for PaySim:
+  --sample 0.01  : Quick test (10k rows, ~5 min) - basic functionality
+  --sample 0.05  : Development (50k rows, ~15-20 min) - meaningful evaluation
+  --sample 1.0   : Production (1M+ rows, ~45-90 min) - full dataset
+
+Minimum sample: --sample 0.005 (5k rows) for SMOTE-ENN compatibility.
 
 Outputs saved to outputs/:
   cm_*.png              Confusion matrix plots
@@ -222,9 +229,15 @@ def main():
         "--sample",
         type=float,
         default=1.0,
-        help="Fraction of PaySim data to use (0 < sample <= 1.0)"
+        help="Fraction of PaySim data to use (0.005 <= sample <= 1.0). "
+             "Recommended: 0.01=quick test, 0.05=development, 1.0=production"
     )
     args = parser.parse_args()
+
+    # Validate sample size
+    if not (0.005 <= args.sample <= 1.0):
+        parser.error("--sample must be between 0.005 and 1.0. "
+                    "Use 0.01 for quick tests, 0.05 for development, 1.0 for production.")
 
     wall = time.time()
     all_results = {}

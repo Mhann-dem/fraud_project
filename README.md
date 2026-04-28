@@ -8,19 +8,51 @@
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
-2. [Folder Structure](#folder-structure)
-3. [Datasets](#datasets)
-4. [Installation](#installation)
-5. [Quick Start](#quick-start)
-6. [Running the Training Pipeline](#running-the-training-pipeline)
-7. [Running the Real-Time System](#running-the-real-time-system)
-8. [API Endpoints](#api-endpoints)
-9. [Dashboard](#dashboard)
-10. [Model Architecture](#model-architecture)
-11. [Evaluation Metrics](#evaluation-metrics)
-12. [Cloud Deployment](#cloud-deployment)
-13. [File Reference](#file-reference)
-14. [References](#references)
+2. [Prerequisites](#prerequisites)
+3. [Folder Structure](#folder-structure)
+4. [Datasets](#datasets)
+5. [Installation](#installation)
+6. [Quick Start](#quick-start)
+7. [Running the Training Pipeline](#running-the-training-pipeline)
+8. [Running the Real-Time System](#running-the-real-time-system)
+9. [API Endpoints](#api-endpoints)
+10. [Dashboard](#dashboard)
+11. [Model Architecture](#model-architecture)
+12. [Evaluation Metrics](#evaluation-metrics)
+13. [Cloud Deployment](#cloud-deployment)
+14. [File Reference](#file-reference)
+15. [Troubleshooting](#troubleshooting)
+16. [References](#references)
+
+---
+
+## Prerequisites
+
+Before you begin, make sure you have the following installed on your system:
+
+- **Python 3.8 or higher** - Download from [python.org](https://www.python.org/downloads/)
+- **Git** - Download from [git-scm.com](https://git-scm.com/downloads)
+- **A code editor** (optional but recommended) - We suggest [Visual Studio Code](https://code.visualstudio.com/)
+
+### System Requirements
+- **RAM**: At least 8GB (16GB recommended for full PaySim training)
+- **Storage**: 5GB free space for datasets and models
+- **Operating System**: Windows, macOS, or Linux
+
+### Quick Check
+Open a terminal/command prompt and run these commands to verify your setup:
+
+```bash
+# Check Python version
+python --version
+# Should show: Python 3.8.x or higher
+
+# Check pip (Python package installer)
+pip --version
+# Should show pip version information
+```
+
+If Python is not installed, download and install it from python.org. Make sure to check "Add Python to PATH" during installation on Windows.
 
 ---
 
@@ -168,25 +200,57 @@ pydantic>=2.0.0
 
 ## Quick Start
 
-**Want to test the real-time system without training from scratch?**
+**Follow these steps to get the fraud detection system running in under 10 minutes:**
 
-The API runs in demo mode with mock scores until a real model is loaded. Start it immediately:
+### Step 1: Download and Setup
+```bash
+# Clone or download this repository
+git clone <repository-url>
+cd fraud_project
+
+# Install Python dependencies
+pip install -r requirements.txt
+```
+
+### Step 2: Train a Quick Model (Optional but Recommended)
+For fastest testing, train on a small sample of the PaySim data:
+
+**Recommended sample sizes:**
+- **Quick test**: `--sample 0.01` (10,000 rows, ~1-2 minutes)
+- **Development**: `--sample 0.05` (50,000 rows, ~10-15 minutes) 
+- **Production**: `--sample 1.0` (full dataset, ~45-90 minutes)
 
 ```bash
 cd fraud_realtime
-pip install -r requirements.txt
-uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+python train_and_save.py --data ../data/PS_20174392719_1491204439457_log.csv --sample 0.01
+cd ..
 ```
 
-Then open `http://localhost:8000/dashboard` or `http://127.0.0.1:8000/dashboard` in your browser and run the simulator in a second terminal:
+**Note**: Minimum sample size is `--sample 0.005` (5,000 rows) to ensure SMOTE-ENN has enough fraud examples to work.
 
+### Step 3: Start the API Server
 ```bash
+cd fraud_realtime
+uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+```
+Keep this terminal running. The API is now live at `http://localhost:8000`
+
+### Step 4: Open the Dashboard
+Open your web browser and go to: `http://localhost:8000/dashboard`
+
+### Step 5: Start the Transaction Stream
+Open a second terminal and run:
+```bash
+cd fraud_realtime
 python stream_simulator.py --demo --rate 5
 ```
 
-If the dashboard still returns an error, confirm the app is running from `fraud_realtime/` and that `fraud_realtime/static/dashboard.html` exists.
+**What you'll see:**
+- Live dashboard with fraud scores updating every few seconds
+- Real-time charts showing transaction risk levels
+- Transaction feed with color-coded risk bands (LOW/MEDIUM/HIGH)
 
-You will see live transactions scoring in the dashboard. Once you have trained a real model (see below), replace the mock scores with the real ones.
+**Need help?** Check the [Troubleshooting](#troubleshooting) section below.
 
 ---
 
@@ -214,8 +278,20 @@ python train_model.py
 For faster PaySim prototyping, run:
 
 ```bash
-python train_model.py --sample 0.1
+# Quick test (10,000 rows, ~5 minutes)
+python train_model.py --sample 0.01
+
+# Development iteration (50,000 rows, ~15-20 minutes)
+python train_model.py --sample 0.05
+
+# Full production training (1M+ rows, ~45-90 minutes)
+python train_model.py --sample 1.0
 ```
+
+**Sample size guidelines:**
+- `--sample 0.01`: Fast prototyping, basic functionality testing
+- `--sample 0.05`: Development work, meaningful evaluation metrics
+- `--sample 1.0`: Production-quality training (recommended for final models)
 
 This runs the full pipeline for all three datasets in sequence:
 
@@ -530,6 +606,86 @@ docker run -p 8000:8000 -v $(pwd)/models:/app/models fraud-api
 | `fraud_realtime/train_and_save.py` | Trains and saves API-ready model artefacts into `fraud_realtime/models/`. |
 | `fraud_realtime/stream_simulator.py` | Replays PaySim CSV or generates synthetic transactions as a live stream. |
 | `fraud_realtime/Dockerfile` | Container image for cloud deployment. |
+
+---
+
+## Troubleshooting
+
+### Common Issues and Solutions
+
+#### 1. "ModuleNotFoundError" when running scripts
+**Problem**: Python can't find required packages.
+**Solution**: Make sure you've installed the requirements:
+```bash
+pip install -r requirements.txt
+```
+If you get permission errors, try:
+```bash
+pip install -r requirements.txt --user
+```
+
+#### 2. "No module named 'sklearn'" or similar
+**Problem**: scikit-learn not installed.
+**Solution**: Install it specifically:
+```bash
+pip install scikit-learn
+```
+
+#### 3. Training takes too long or runs out of memory
+**Problem**: Full PaySim dataset is too large.
+**Solution**: Use sampling for testing:
+```bash
+python train_model.py --sample 0.01
+```
+Or for the API training:
+```bash
+cd fraud_realtime
+python train_and_save.py --data ../data/PS_20174392719_1491204439457_log.csv --sample 0.1
+```
+
+#### 4. API won't start: "Model files not found"
+**Problem**: Model artefacts haven't been copied to the API folder.
+**Solution**: Run the copy commands from the "Running the Real-Time System" section, or use `train_and_save.py` in the `fraud_realtime` folder.
+
+#### 5. Dashboard shows "Connection failed"
+**Problem**: WebSocket connection can't be established.
+**Solution**: Make sure the API is running on the correct port (8000) and that your firewall allows connections.
+
+#### 6. "CUDA out of memory" during training
+**Problem**: GPU memory insufficient for full training.
+**Solution**: Use CPU-only training by setting environment variable:
+```bash
+export CUDA_VISIBLE_DEVICES=""
+python train_model.py --sample 0.1
+```
+
+#### 7. "Permission denied" on Windows
+**Problem**: File access issues.
+**Solution**: Run your terminal/command prompt as Administrator, or check file permissions.
+
+#### 8. API returns 500 error on /predict
+**Problem**: Model loading failed or transaction format incorrect.
+**Solution**: Check that all model files exist in `fraud_realtime/models/`, and verify your JSON matches the expected format (see API Endpoints section).
+
+#### 9. "No such file or directory" for datasets
+**Problem**: Dataset paths are incorrect.
+**Solution**: Check that the CSV files exist in the `data/` folder, and update paths in `config.py` if needed.
+
+#### 10. Training fails with "SMOTE-ENN error"
+**Problem**: Sample too small for resampling.
+**Solution**: Use a larger sample fraction (minimum 0.001 for PaySim).
+
+### Getting Help
+
+If you encounter an issue not covered here:
+
+1. Check the terminal output for error messages
+2. Verify all prerequisites are installed
+3. Try running with `--sample` for faster testing
+4. Check that all file paths in `config.py` are correct
+5. Look at the API logs when the server is running with `--reload`
+
+For bugs or feature requests, please open an issue on the GitHub repository.
 
 ---
 

@@ -2,17 +2,27 @@
 =============================================================================
 train_and_save.py
 =============================================================================
-Trains the stacked ensemble on PaySim and saves:
-  models/stacked_ensemble.joblib  — trained XGBoost meta-model
-  models/scaler.joblib            — fitted MinMaxScaler
-  models/base_models.joblib       — all four base learners (for retraining)
-  models/base_lr.joblib           — logistic regression base learner
-  models/base_rf.joblib           — random forest base learner
-  models/base_xgb.joblib          — XGBoost base learner
-  models/base_lgb.joblib          — LightGBM base learner
+Trains the stacked ensemble on PaySim and saves model artifacts for the API.
 
-Run once before starting the API:
-    python train_and_save.py --data data/PS_20174392719_1491204439457_log.csv
+Outputs saved to fraud_realtime/models/:
+  stacked_ensemble.joblib  — trained XGBoost meta-model
+  scaler.joblib            — fitted MinMaxScaler
+  base_lr.joblib           — logistic regression base learner
+  base_rf.joblib           — random forest base learner
+  base_xgb.joblib          — XGBoost base learner
+  base_lgb.joblib          — LightGBM base learner
+
+Usage examples:
+  # Quick test (10k rows, ~5 minutes)
+  python train_and_save.py --data ../data/PS_20174392719_1491204439457_log.csv --sample 0.01
+
+  # Development (50k rows, ~15 minutes)
+  python train_and_save.py --data ../data/PS_20174392719_1491204439457_log.csv --sample 0.05
+
+  # Production (full dataset, ~45-90 minutes)
+  python train_and_save.py --data ../data/PS_20174392719_1491204439457_log.csv --sample 1.0
+
+Minimum sample: --sample 0.005 (5k rows) for SMOTE-ENN compatibility.
 =============================================================================
 """
 
@@ -229,12 +239,14 @@ def main():
         "--sample",
         type=float,
         default=1.0,
-        help="Fraction of PaySim rows to load for faster prototyping (0 < sample <= 1.0)"
+        help="Fraction of PaySim rows to load (0.005 <= sample <= 1.0). "
+             "Recommended: 0.01=quick test, 0.05=development, 1.0=production"
     )
     args = parser.parse_args()
 
-    if not (0.0 < args.sample <= 1.0):
-        parser.error("--sample must be greater than 0 and at most 1.0")
+    if not (0.005 <= args.sample <= 1.0):
+        parser.error("--sample must be between 0.005 and 1.0. "
+                    "Use 0.01 for quick tests, 0.05 for development, 1.0 for production.")
 
     df, y = load_and_prepare(args.data, sample_fraction=args.sample)
 
